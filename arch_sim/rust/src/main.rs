@@ -15,6 +15,10 @@ struct Cli {
     #[arg(long, global = true)]
     auto: bool,
 
+    /// Append --noconfirm to pacman/paru actions
+    #[arg(long, global = true)]
+    yes: bool,
+
     /// Prefer paru for installs even when a -bin package is not specified
     #[arg(long, global = true)]
     prefer_paru: bool,
@@ -54,6 +58,7 @@ fn main() -> Result<(), AssistError> {
     let config = ExecConfig {
         dry_run: cli.dry_run,
         auto: cli.auto,
+        yes: cli.yes,
         prefer_paru: cli.prefer_paru,
         no_sudo: cli.no_sudo,
         verbose: cli.verbose,
@@ -74,6 +79,7 @@ fn main() -> Result<(), AssistError> {
 struct ExecConfig {
     dry_run: bool,
     auto: bool,
+    yes: bool,
     prefer_paru: bool,
     no_sudo: bool,
     verbose: bool,
@@ -118,7 +124,7 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<String>> {
 
     if first == "install" && !rest.is_empty() {
         let installer = installer_for(&rest, config);
-        return Some(vec![format!("{installer} -S --needed {rest}")]);
+        return Some(vec![install_cmd(&installer, &rest, config)]);
     }
 
     if ["remove", "uninstall", "delete"].contains(&first) && !rest.is_empty() {
@@ -128,13 +134,13 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<String>> {
         } else {
             format!("{installer} -R {rest}")
         };
-        return Some(vec![base]);
+        return Some(vec![apply_pkg_flags(base, config)]);
     }
 
     if ["open", "launch", "start"].contains(&first) && !rest.is_empty() {
         let installer = installer_for(&rest, config);
         return Some(vec![
-            format!("{installer} -S --needed {rest}"),
+            install_cmd(&installer, &rest, config),
             format!("{rest}"),
         ]);
     }
@@ -152,6 +158,38 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<String>> {
             "nmcli networking on".to_string(),
             "nmcli -t -f DEVICE,STATE d".to_string(),
         ]);
+    }
+
+    if lower.contains("upgrade system") || lower.contains("update system") || first == "upgrade" {
+        let installer = installer_for("base", config);
+        let base = format!("{installer} -Syu");
+        return Some(vec![apply_pkg_flags(base, config)]);
+    }
+
+    if lower.contains("clean cache") || lower.contains("cleanup") || lower.contains("clear cache") {
+        let installer = installer_for("base", config);
+        let base = format!("{installer} -Sc");
+        return Some(vec![apply_pkg_flags(base, config)]);
+    }
+
+    if lower.contains("wifi status") || lower.contains("network status") {
+        return Some(vec![
+            "nmcli general status".to_string(),
+            "nmcli -t -f DEVICE,STATE d".to_string(),
+        ]);
+    }
+
+    if lower.contains("fix bluetooth") || lower.contains("bluetooth") {
+        return Some(vec![
+            "sudo systemctl restart bluetooth".to_string(),
+            "bluetoothctl show".to_string(),
+        ]);
+    }
+
+    if ["logs", "journal"].contains(&first) && !rest.is_empty() {
+        return Some(vec![format!(
+            "journalctl -u {rest} --no-pager -n 50"
+        )]);
     }
 
     None
@@ -200,11 +238,34 @@ fn validate(cmd: &str) -> Result<(), AssistError> {
     // Minimal allowlist on the leading token
     let mut parts = cmd.split_whitespace();
     let first = parts.next().unwrap_or("");
-    let allowed = ["sudo", "pacman", "paru", "systemctl", "nmcli", "pactl"];
+    let allowed = [
+        "sudo",
+        "pacman",
+        "paru",
+        "systemctl",
+        "nmcli",
+        "pactl",
+        "bluetoothctl",
+        "journalctl",
+    ];
     let allowed_program = allowed.contains(&first) || (!first.is_empty() && !first.contains('/') && !first.starts_with('-'));
     if !allowed_program {
         return Err(AssistError::Unsafe(cmd.into()));
     }
 
     Ok(())
+}
+
+fn apply_pkg_flags(cmd: String, config: &ExecConfig) -> String {
+    if config.yes
+        && (cmd.starts_with("sudo pacman ") || cmd.starts_with("pacman ") || cmd.starts_with("paru "))
+        && !cmd.contains("--noconfirm")
+    {
+        return format!("{cmd} --noconfirm");
+    }
+    cmd
+}
+
+fn install_cmd(installer: &str, pkg: &str, config: &ExecConfig) -> String {
+    apply_pkg_flags(format!("{installer} -S --needed {pkg}"), config)
 }
