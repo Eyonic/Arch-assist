@@ -25,18 +25,13 @@ Think of it as “AI autocomplete for your terminal”, not a replacement for pa
 
 
 1. The python Arch simulator is done :)
-
-   python main.py
-
-archsim $ paru -S brave-bin <br>
-:: Resolving AUR dependencies...<br>
-:: Installing brave-bin<br>
-archsim $<br>
-
-2. Make the ai Command-line rewriting. I got it working, But only 70% of the time "it does not messup the commands it just put in extra stuff in it" 
+2. The rust code is working. (documentation is in the rust folder)
+3. Testing on a clean arch linux (final boss)
 
 
 
 
 #Plans
-When smaller Ollama models become sufficiently capable, I want this to run fully offline. For now, however, using ChatGPT makes it far more powerful.
+When smaller Ollama models become sufficiently capable, I want this system to run fully offline. For now, however, I’m using ChatGPT (specifically 4.1). I’d prefer to use ChatGPT-5, but the API is still a pain when I ask chatgtp 5 why it does not know even though it should, I end up going back to GPT-4o-mini instead.
+
+Despite that, ChatGPT is still far more powerful than most Ollama models at the moment, and it’s very affordable.
