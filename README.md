@@ -21,5 +21,20 @@ You type what you want in plain English (or troubleshooting descriptions), the A
 Think of it as “AI autocomplete for your terminal”, not a replacement for pacman.
 
 
+#Road-Map
+
+
+1. The python Arch simulator is done :)
+
+archsim $ paru -S brave-bin
+:: Resolving AUR dependencies...
+:: Installing brave-bin
+archsim $
+
+2. Make the ai Command-line rewriting. I got it working, But only 70% of the time "it does not messup the commands it just put in extra stuff in it" 
+
+
+
+
 #Plans
 When smaller Ollama models become sufficiently capable, I want this to run fully offline. For now, however, using ChatGPT makes it far more powerful.
