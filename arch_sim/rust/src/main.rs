@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
 use clap::{Parser, Subcommand};
@@ -14,6 +15,10 @@ struct Cli {
     /// Auto-run AI suggestions instead of only printing them
     #[arg(long, global = true)]
     auto: bool,
+
+    /// Require offline-safe commands (block pacman/paru downloads)
+    #[arg(long, global = true)]
+    offline: bool,
 
     /// Append --noconfirm to pacman/paru actions
     #[arg(long, global = true)]
@@ -58,6 +63,7 @@ fn main() -> Result<(), AssistError> {
     let config = ExecConfig {
         dry_run: cli.dry_run,
         auto: cli.auto,
+        offline: cli.offline,
         yes: cli.yes,
         prefer_paru: cli.prefer_paru,
         no_sudo: cli.no_sudo,
@@ -79,6 +85,7 @@ fn main() -> Result<(), AssistError> {
 struct ExecConfig {
     dry_run: bool,
     auto: bool,
+    offline: bool,
     yes: bool,
     prefer_paru: bool,
     no_sudo: bool,
@@ -87,18 +94,23 @@ struct ExecConfig {
 
 fn handle_prompt(prompt: &str, config: &ExecConfig) -> Result<(), AssistError> {
     if let Some(commands) = builtin_translate(prompt, config) {
-        for cmd in &commands {
-            println!("{cmd}");
+        for sugg in &commands {
+            println!("{}    # {}", sugg.cmd, sugg.reason);
         }
 
         if !config.auto {
-            // Suggest but do not run unless explicitly applied
+            // Suggest but do not run unless explicitly requested
             return Ok(());
         }
 
-        for cmd in commands {
-            validate(&cmd)?;
-            run(&cmd, config)?;
+        if !confirm(&commands, config)? {
+            return Ok(());
+        }
+
+        for sugg in commands {
+            ensure_offline_ok(&sugg, config)?;
+            validate(&sugg.cmd)?;
+            run(&sugg.cmd, config)?;
         }
         return Ok(());
     }
@@ -116,7 +128,13 @@ fn installer_for(pkg: &str, config: &ExecConfig) -> &'static str {
     }
 }
 
-fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<String>> {
+#[derive(Debug, Clone)]
+struct Suggestion {
+    cmd: String,
+    reason: &'static str,
+}
+
+fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion>> {
     let lower = prompt.to_lowercase();
     let mut tokens = lower.split_whitespace();
     let first = tokens.next().unwrap_or("");
@@ -124,7 +142,7 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<String>> {
 
     if first == "install" && !rest.is_empty() {
         let installer = installer_for(&rest, config);
-        return Some(vec![install_cmd(&installer, &rest, config)]);
+        return Some(vec![install_cmd(&installer, &rest, config, "install package")]);
     }
 
     if ["remove", "uninstall", "delete"].contains(&first) && !rest.is_empty() {
@@ -134,62 +152,102 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<String>> {
         } else {
             format!("{installer} -R {rest}")
         };
-        return Some(vec![apply_pkg_flags(base, config)]);
+        return Some(vec![Suggestion {
+            cmd: apply_pkg_flags(base, config),
+            reason: "remove package",
+        }]);
     }
 
     if ["open", "launch", "start"].contains(&first) && !rest.is_empty() {
         let installer = installer_for(&rest, config);
         return Some(vec![
-            install_cmd(&installer, &rest, config),
-            format!("{rest}"),
+            install_cmd(&installer, &rest, config, "ensure app is installed"),
+            Suggestion {
+                cmd: format!("{rest}"),
+                reason: "launch app",
+            },
         ]);
     }
 
     if lower.contains("fix sound") || lower.contains("fix audio") || lower.contains("sound") {
         return Some(vec![
-            "systemctl --user restart pipewire wireplumber".to_string(),
-            "pactl info".to_string(),
+            Suggestion {
+                cmd: "systemctl --user restart pipewire wireplumber".to_string(),
+                reason: "restart audio services",
+            },
+            Suggestion {
+                cmd: "pactl info".to_string(),
+                reason: "inspect pulse server state",
+            },
         ]);
     }
 
     if lower.contains("fix internet") || lower.contains("fix network") || lower.contains("network") {
         return Some(vec![
-            "sudo systemctl restart NetworkManager".to_string(),
-            "nmcli networking on".to_string(),
-            "nmcli -t -f DEVICE,STATE d".to_string(),
+            Suggestion {
+                cmd: "sudo systemctl restart NetworkManager".to_string(),
+                reason: "restart network manager",
+            },
+            Suggestion {
+                cmd: "nmcli networking on".to_string(),
+                reason: "enable networking",
+            },
+            Suggestion {
+                cmd: "nmcli -t -f DEVICE,STATE d".to_string(),
+                reason: "list device states",
+            },
         ]);
     }
 
     if lower.contains("upgrade system") || lower.contains("update system") || first == "upgrade" {
         let installer = installer_for("base", config);
         let base = format!("{installer} -Syu");
-        return Some(vec![apply_pkg_flags(base, config)]);
+        return Some(vec![Suggestion {
+            cmd: apply_pkg_flags(base, config),
+            reason: "upgrade system packages",
+        }]);
     }
 
     if lower.contains("clean cache") || lower.contains("cleanup") || lower.contains("clear cache") {
         let installer = installer_for("base", config);
         let base = format!("{installer} -Sc");
-        return Some(vec![apply_pkg_flags(base, config)]);
+        return Some(vec![Suggestion {
+            cmd: apply_pkg_flags(base, config),
+            reason: "clean package cache",
+        }]);
     }
 
     if lower.contains("wifi status") || lower.contains("network status") {
         return Some(vec![
-            "nmcli general status".to_string(),
-            "nmcli -t -f DEVICE,STATE d".to_string(),
+            Suggestion {
+                cmd: "nmcli general status".to_string(),
+                reason: "show network status",
+            },
+            Suggestion {
+                cmd: "nmcli -t -f DEVICE,STATE d".to_string(),
+                reason: "list device connectivity",
+            },
         ]);
     }
 
     if lower.contains("fix bluetooth") || lower.contains("bluetooth") {
         return Some(vec![
-            "sudo systemctl restart bluetooth".to_string(),
-            "bluetoothctl show".to_string(),
+            Suggestion {
+                cmd: "sudo systemctl restart bluetooth".to_string(),
+                reason: "restart bluetooth service",
+            },
+            Suggestion {
+                cmd: "bluetoothctl show".to_string(),
+                reason: "show bluetooth adapter state",
+            },
         ]);
     }
 
     if ["logs", "journal"].contains(&first) && !rest.is_empty() {
-        return Some(vec![format!(
-            "journalctl -u {rest} --no-pager -n 50"
-        )]);
+        return Some(vec![Suggestion {
+            cmd: format!("journalctl -u {rest} --no-pager -n 50"),
+            reason: "tail service logs",
+        }]);
     }
 
     None
@@ -211,7 +269,14 @@ fn run(cmd: &str, config: &ExecConfig) -> Result<(), AssistError> {
         .args(&args)
         .stdin(Stdio::null())
         .spawn()
-        .and_then(|mut child| child.wait())
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AssistError::CommandFailed(format!("{prog} not found; install or adjust PATH"))
+            } else {
+                AssistError::CommandFailed(format!("{cmd} ({e})"))
+            }
+        })?
+        .wait()
         .map_err(|e| AssistError::CommandFailed(format!("{cmd} ({e})")))?;
 
     if config.verbose {
@@ -266,6 +331,44 @@ fn apply_pkg_flags(cmd: String, config: &ExecConfig) -> String {
     cmd
 }
 
-fn install_cmd(installer: &str, pkg: &str, config: &ExecConfig) -> String {
-    apply_pkg_flags(format!("{installer} -S --needed {pkg}"), config)
+fn install_cmd(installer: &str, pkg: &str, config: &ExecConfig, reason: &'static str) -> Suggestion {
+    Suggestion {
+        cmd: apply_pkg_flags(format!("{installer} -S --needed {pkg}"), config),
+        reason,
+    }
+}
+
+fn confirm(_suggestions: &[Suggestion], config: &ExecConfig) -> Result<bool, AssistError> {
+    if config.yes {
+        return Ok(true);
+    }
+    print!("Run these commands? [y/N] ");
+    io::stdout()
+        .flush()
+        .map_err(|e| AssistError::CommandFailed(format!("confirm ({e})")))?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| AssistError::CommandFailed(format!("confirm ({e})")))?;
+    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
+}
+
+fn ensure_offline_ok(suggestion: &Suggestion, config: &ExecConfig) -> Result<(), AssistError> {
+    if !config.offline {
+        return Ok(());
+    }
+    let cmd = suggestion.cmd.as_str();
+    let is_pkg_op = cmd.contains(" pacman -S")
+        || cmd.contains(" pacman -Syu")
+        || cmd.contains("paru -S")
+        || cmd.starts_with("pacman -S")
+        || cmd.starts_with("paru -S")
+        || cmd.starts_with("sudo pacman -S");
+    if is_pkg_op {
+        return Err(AssistError::Unsafe(format!(
+            "offline mode: blocked network command: {}",
+            suggestion.cmd
+        )));
+    }
+    Ok(())
 }

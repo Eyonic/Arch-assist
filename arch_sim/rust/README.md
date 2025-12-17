@@ -13,6 +13,7 @@ Minimal Arch helper that translates common intent (install/remove/open/fix) into
 - Prefer paru over pacman: `arch-assist --prefer-paru ai "install firefox"`
 - Avoid sudo for pacman: `arch-assist --no-sudo ai "install base"`
 - Add --noconfirm to package ops: `arch-assist --yes --auto ai "install vlc"`
+- Block package downloads (offline): `arch-assist --offline ai "upgrade system"` (will refuse)
 - Verbose exit codes: `arch-assist --verbose --auto ai "fix internet"`
 - Install package suggestion: `arch-assist ai "install firefox"`
 - Remove package suggestion (alias: uninstall/delete): `arch-assist ai "uninstall firefox"`
@@ -24,3 +25,4 @@ Minimal Arch helper that translates common intent (install/remove/open/fix) into
 - Bluetooth fix: `arch-assist ai "fix bluetooth"`
 
 Commands run directly on your system (pacman/paru/systemctl). Keep `--dry-run` on if you just want the suggested commands.
+When `--auto` is used, you'll be asked to confirm unless `--yes` is provided.
