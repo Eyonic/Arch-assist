@@ -449,11 +449,17 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: system_prompt.to_string(),
+                content: vec![ChatContent {
+                    kind: "text".to_string(),
+                    text: system_prompt.to_string(),
+                }],
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: prompt.to_string(),
+                content: vec![ChatContent {
+                    kind: "text".to_string(),
+                    text: prompt.to_string(),
+                }],
             },
         ],
     };
@@ -493,7 +499,14 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
 #[derive(Serialize)]
 struct ChatMessage {
     role: String,
-    content: String,
+    content: Vec<ChatContent>,
+}
+
+#[derive(Serialize)]
+struct ChatContent {
+    #[serde(rename = "type")]
+    kind: String,
+    text: String,
 }
 
 #[derive(Serialize)]
