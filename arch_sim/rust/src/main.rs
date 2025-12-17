@@ -209,14 +209,32 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
     }
 
     if ["open", "launch", "start"].contains(&first) && !rest.is_empty() {
-        let installer = installer_for(&rest, config);
-        return Some(vec![
-            install_cmd(&installer, &rest, config, "ensure app is installed"),
-            Suggestion {
-                cmd: format!("{rest}"),
-                reason: "launch app",
-            },
-        ]);
+        if config.offline {
+            if let Some(install) = build_install_command(&rest, "-S --needed", config) {
+                return Some(vec![
+                    Suggestion {
+                        cmd: install,
+                        reason: "ensure app is installed",
+                    },
+                    Suggestion {
+                        cmd: rest.clone(),
+                        reason: "launch app",
+                    },
+                ]);
+            }
+            // fallback to previous behavior if resolution failed
+            let installer = installer_for(&rest, config);
+            return Some(vec![
+                install_cmd(&installer, &rest, config, "ensure app is installed"),
+                Suggestion {
+                    cmd: format!("{rest}"),
+                    reason: "launch app",
+                },
+            ]);
+        }
+
+        // Non-offline: let LLM handle fuzzy package mapping
+        return None;
     }
 
     if lower.contains("fix sound") || lower.contains("fix audio") || lower.contains("sound") {
@@ -549,6 +567,15 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
         .map(|cmd| rewrite_install_with_resolution(cmd, config))
         .collect();
 
+    // If this was a launch intent and we only have installs, add a launch step
+    if is_launch_intent(prompt) && !remapped.iter().any(|c| c.starts_with("launch ")) {
+        if let Some(app) = extract_app_name_from_install(&remapped) {
+            let mut with_launch = remapped.clone();
+            with_launch.push(format!("launch {}", app));
+            return Ok(with_launch);
+        }
+    }
+
     Ok(remapped)
 }
 
@@ -559,6 +586,7 @@ fn adjust_commands_for_intent(cmds: Vec<String>, prompt: &str) -> Vec<String> {
     } else {
         None
     };
+    let is_launch_intent = is_launch_intent(&prompt_lower);
 
     let mut out = Vec::new();
     for cmd in &cmds {
@@ -572,6 +600,11 @@ fn adjust_commands_for_intent(cmds: Vec<String>, prompt: &str) -> Vec<String> {
                 out.push(rewritten);
                 continue;
             }
+        }
+
+        if is_launch_intent && needs_launch_wrapper(cmd) {
+            out.push(format!("launch {}", cmd));
+            continue;
         }
 
         out.push(cmd.clone());
@@ -614,6 +647,52 @@ fn rewrite_install_pkg(cmd: &str, new_pkg: &str) -> Option<String> {
     Some(rebuilt)
 }
 
+fn needs_launch_wrapper(cmd: &str) -> bool {
+    let allowed = [
+        "sudo", "pacman", "paru", "systemctl", "nmcli", "pactl", "bluetoothctl", "journalctl",
+        "timedatectl", "echo", "launch",
+    ];
+    let mut parts = cmd.split_whitespace();
+    let first = parts.next().unwrap_or("");
+    if allowed.contains(&first) {
+        return false;
+    }
+    // If it's a single token (likely app name), wrap it
+    !cmd.contains(' ')
+}
+
+fn extract_app_name_from_install(cmds: &[String]) -> Option<String> {
+    for cmd in cmds {
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.len() >= 2 && parts[0] == "launch" {
+            return Some(parts[1].to_string());
+        }
+        if parts.len() >= 3 && parts[0] == "sudo" && parts[1] == "pacman" && parts[2].starts_with("-S") {
+            if let Some(pkg) = parts.last() {
+                return Some((*pkg).to_string());
+            }
+        }
+        if parts.len() >= 2 && parts[0] == "pacman" && parts[1].starts_with("-S") {
+            if let Some(pkg) = parts.last() {
+                return Some((*pkg).to_string());
+            }
+        }
+        if parts.len() >= 2 && parts[0] == "paru" && parts[1].starts_with("-S") {
+            if let Some(pkg) = parts.last() {
+                return Some((*pkg).to_string());
+            }
+        }
+    }
+    None
+}
+
+fn is_launch_intent(prompt: &str) -> bool {
+    let prompt_lower = prompt.to_lowercase();
+    ["open", "launch", "start"]
+        .iter()
+        .any(|k| prompt_lower.starts_with(k))
+}
+
 fn rewrite_install_with_resolution(cmd: String, config: &ExecConfig) -> String {
     let trimmed = cmd.trim();
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
@@ -650,7 +729,35 @@ fn resolve_installer(flags_and_pkg: Vec<&str>, pkg: &str, config: &ExecConfig) -
             if is_probably_aur(pkg) {
                 Some(format!("paru {} {}", flags, pkg))
             } else {
-                None
+                Some(format!(
+                    "{} {} {}",
+                    if config.no_sudo { "pacman" } else { "sudo pacman" },
+                    flags,
+                    pkg
+                ))
+            }
+        }
+        PackageOrigin::Offline => None,
+    }
+}
+
+fn build_install_command(pkg: &str, flags: &str, config: &ExecConfig) -> Option<String> {
+    let resolution = resolve_package(pkg, config);
+    match resolution {
+        PackageOrigin::Repo => {
+            let installer = if config.no_sudo { "pacman" } else { "sudo pacman" };
+            Some(format!("{installer} {flags} {pkg}"))
+        }
+        PackageOrigin::Aur => Some(format!("paru {flags} {pkg}")),
+        PackageOrigin::Unknown => {
+            if is_probably_aur(pkg) {
+                Some(format!("paru {flags} {pkg}"))
+            } else {
+                Some(format!(
+                    "{} {flags} {}",
+                    if config.no_sudo { "pacman" } else { "sudo pacman" },
+                    pkg
+                ))
             }
         }
         PackageOrigin::Offline => None,
@@ -773,6 +880,7 @@ struct ArchSearch {
 
 #[derive(Deserialize)]
 struct ArchResult {
+    #[allow(dead_code)]
     pkgname: String,
 }
 
