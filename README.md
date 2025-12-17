@@ -26,10 +26,10 @@ Think of it as “AI autocomplete for your terminal”, not a replacement for pa
 
 1. The python Arch simulator is done :)
 
-archsim $ paru -S brave-bin
-:: Resolving AUR dependencies...
-:: Installing brave-bin
-archsim $
+archsim $ paru -S brave-bin <br>
+:: Resolving AUR dependencies...<br>
+:: Installing brave-bin<br>
+archsim $<br>
 
 2. Make the ai Command-line rewriting. I got it working, But only 70% of the time "it does not messup the commands it just put in extra stuff in it" 
 
