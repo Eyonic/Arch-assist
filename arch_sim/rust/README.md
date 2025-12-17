@@ -8,14 +8,14 @@ Minimal Arch helper that translates common intent (install/remove/open/fix) into
 - Binary will be at `~/.cargo/bin/arch-assist`
 
 ## Usage
-- Dry run (only print): `arch-assist --dry-run ai "open brave"`
+- Suggest commands only (default): `arch-assist ai "open brave"` (prints commands; does not run)
+- Apply suggestions: `arch-assist --apply ai "open brave"`
 - Prefer paru over pacman: `arch-assist --prefer-paru ai "install firefox"`
 - Avoid sudo for pacman: `arch-assist --no-sudo ai "install base"`
-- Verbose exit codes: `arch-assist --verbose ai "fix internet"`
-- Install package: `arch-assist ai "install firefox"`
-- Remove package (alias: uninstall/delete): `arch-assist ai "uninstall firefox"`
-- Open app (auto-install if missing): `arch-assist ai "open vlc"`
-- Fix sound: `arch-assist ai "fix sound"`
-- Fix internet: `arch-assist ai "fix internet"`
+- Verbose exit codes: `arch-assist --verbose --apply ai "fix internet"`
+- Install package suggestion: `arch-assist ai "install firefox"`
+- Remove package suggestion (alias: uninstall/delete): `arch-assist ai "uninstall firefox"`
+- Open app suggestion (auto-install+launch if applied): `arch-assist --apply ai "open vlc"`
+- Fix sound/internet suggestions: `arch-assist ai "fix sound"` / `arch-assist ai "fix internet"`
 
 Commands run directly on your system (pacman/paru/systemctl). Keep `--dry-run` on if you just want the suggested commands.

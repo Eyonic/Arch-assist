@@ -11,6 +11,10 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
+    /// Apply AI suggestions instead of only printing them
+    #[arg(long, global = true)]
+    apply: bool,
+
     /// Prefer paru for installs even when a -bin package is not specified
     #[arg(long, global = true)]
     prefer_paru: bool,
@@ -49,6 +53,7 @@ fn main() -> Result<(), AssistError> {
     let cli = Cli::parse();
     let config = ExecConfig {
         dry_run: cli.dry_run,
+        apply: cli.apply,
         prefer_paru: cli.prefer_paru,
         no_sudo: cli.no_sudo,
         verbose: cli.verbose,
@@ -68,6 +73,7 @@ fn main() -> Result<(), AssistError> {
 #[derive(Clone, Copy)]
 struct ExecConfig {
     dry_run: bool,
+    apply: bool,
     prefer_paru: bool,
     no_sudo: bool,
     verbose: bool,
@@ -75,6 +81,15 @@ struct ExecConfig {
 
 fn handle_prompt(prompt: &str, config: &ExecConfig) -> Result<(), AssistError> {
     if let Some(commands) = builtin_translate(prompt, config) {
+        for cmd in &commands {
+            println!("{cmd}");
+        }
+
+        if !config.apply {
+            // Suggest but do not run unless explicitly applied
+            return Ok(());
+        }
+
         for cmd in commands {
             validate(&cmd)?;
             run(&cmd, config)?;
