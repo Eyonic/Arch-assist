@@ -21,5 +21,5 @@ You type what you want in plain English (or troubleshooting descriptions), the A
 Think of it as “AI autocomplete for your terminal”, not a replacement for pacman.
 
 
-#plans
+#Plans
 When smaller Ollama models become sufficiently capable, I want this to run fully offline. For now, however, using ChatGPT makes it far more powerful.
