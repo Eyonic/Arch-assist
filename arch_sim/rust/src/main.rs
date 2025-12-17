@@ -2,6 +2,8 @@ use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
 use clap::{Parser, Subcommand};
+use reqwest::blocking::Client as HttpClient;
+use serde::{Deserialize, Serialize};
 use shell_words::split as shell_split;
 use thiserror::Error;
 
@@ -115,7 +117,40 @@ fn handle_prompt(prompt: &str, config: &ExecConfig) -> Result<(), AssistError> {
         return Ok(());
     }
 
-    Err(AssistError::NoSuggestion)
+    // Fall back to OpenAI suggestion
+    let llm_cmds = llm_translate(prompt, config)?;
+    for cmd in &llm_cmds {
+        println!("{cmd}    # from openai");
+    }
+
+    if !config.auto {
+        return Ok(());
+    }
+
+    if !confirm(
+        &llm_cmds
+            .iter()
+            .map(|c| Suggestion {
+                cmd: c.clone(),
+                reason: "LLM suggestion",
+            })
+            .collect::<Vec<_>>(),
+        config,
+    )? {
+        return Ok(());
+    }
+
+    for cmd in llm_cmds {
+        let sugg = Suggestion {
+            cmd: cmd.clone(),
+            reason: "LLM suggestion",
+        };
+        ensure_offline_ok(&sugg, config)?;
+        validate(&sugg.cmd)?;
+        run(&sugg.cmd, config)?;
+    }
+
+    Ok(())
 }
 
 fn installer_for(pkg: &str, config: &ExecConfig) -> &'static str {
@@ -371,4 +406,92 @@ fn ensure_offline_ok(suggestion: &Suggestion, config: &ExecConfig) -> Result<(),
         )));
     }
     Ok(())
+}
+
+fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, AssistError> {
+    if config.offline {
+        return Err(AssistError::CommandFailed(
+            "offline mode: LLM suggestions disabled".into(),
+        ));
+    }
+
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .map_err(|_| AssistError::CommandFailed("OPENAI_API_KEY not set".into()))?;
+
+    let client = HttpClient::new();
+    let system_prompt = "You are an Arch Linux expert. Respond with ONLY shell commands, one per line. Prefer pacman, then paru. Never use dangerous operators (rm, dd, mkfs, pipes, redirects).";
+
+    let req_body = ChatRequest {
+        model: "gpt-5-mini".to_string(),
+        max_tokens: 150,
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: system_prompt.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: prompt.to_string(),
+            },
+        ],
+    };
+
+    let resp: ChatResponse = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&req_body)
+        .send()
+        .map_err(|e| AssistError::CommandFailed(format!("llm call ({e})")))?
+        .error_for_status()
+        .map_err(|e| AssistError::CommandFailed(format!("llm call ({e})")))?
+        .json()
+        .map_err(|e| AssistError::CommandFailed(format!("llm decode ({e})")))?;
+
+    let content = resp
+        .choices
+        .first()
+        .and_then(|c| c.message.content.clone())
+        .ok_or_else(|| AssistError::NoSuggestion)?;
+
+    let cmds: Vec<String> = content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
+
+    if cmds.is_empty() {
+        return Err(AssistError::NoSuggestion);
+    }
+
+    Ok(cmds)
+}
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    max_tokens: u32,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<Choice>,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    message: LlmMessage,
+}
+
+#[derive(Deserialize)]
+struct LlmMessage {
+    content: Option<String>,
 }
