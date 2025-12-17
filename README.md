@@ -1,2 +1,21 @@
-# Arch-assist
-AI-powered command-line assistant for Arch Linux that translates natural language into safe, transparent shell commands.
+#AI-powered command-line assistant for Arch Linux that translates natural language into safe, transparent shell commands.
+
+You type what you want in plain English (or troubleshooting descriptions), the AI rewrites your command in-place, and you decide whether to execute it by pressing Enter again. Nothing runs automatically.
+
+#Key features:
+
+🧠 Natural language → Arch Linux commands
+
+🔁 Command-line rewriting (not auto-execution)
+
+📦 Aware of installed packages (names only)
+
+🔧 Troubleshooting mode (one safe step at a time)
+
+🔐 Strong safety model (allowlists, no destructive commands)
+
+🐚 Shell-native UX (bash/zsh/fish friendly)
+
+🧱 Arch philosophy–compliant: explicit, transparent, user-controlled
+
+Think of it as “AI autocomplete for your terminal”, not a replacement for pacman.
