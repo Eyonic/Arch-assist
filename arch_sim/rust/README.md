@@ -15,6 +15,9 @@ Minimal Arch helper that translates common intent (install/remove/open/fix) into
 - Add --noconfirm to package ops: `arch-assist --yes --auto ai "install vlc"`
 - Block package downloads (offline): `arch-assist --offline ai "upgrade system"` (will refuse)
 - Verbose exit codes: `arch-assist --verbose --auto ai "fix internet"`
+- Track installed packages (names only) in `installed_packages.txt` (default); populate with `pacman -Qq > installed_packages.txt` on Arch. AI prompt will include this list and skip installs already present.
+- Clear the installed list: `arch-assist --clear-installed ai "anything"` (exits after clearing)
+- Custom installed list path: `arch-assist --installed-file /path/to/list.txt ai "install ..."`.
 - Install package suggestion: `arch-assist ai "install firefox"`
 - Remove package suggestion (alias: uninstall/delete): `arch-assist ai "uninstall firefox"`
 - Open app suggestion (auto-install+launch if auto): `arch-assist --auto ai "open vlc"`

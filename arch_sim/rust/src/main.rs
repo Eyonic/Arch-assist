@@ -6,6 +6,9 @@ use reqwest::blocking::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use shell_words::split as shell_split;
 use thiserror::Error;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::fs;
 
 #[derive(Parser)]
 #[command(name = "arch-assist", version, about = "Lightweight Arch helper with AI-ish shortcuts")]
@@ -38,6 +41,14 @@ struct Cli {
     #[arg(long, global = true)]
     verbose: bool,
 
+    /// Path to the installed-packages list
+    #[arg(long, global = true, value_name = "FILE", default_value = "installed_packages.txt")]
+    installed_file: PathBuf,
+
+    /// Clear the installed list and exit
+    #[arg(long, global = true)]
+    clear_installed: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -60,7 +71,8 @@ enum AssistError {
 
 fn main() -> Result<(), AssistError> {
     let cli = Cli::parse();
-    let config = ExecConfig {
+    let mut state = AppState {
+        config: ExecConfig {
         dry_run: cli.dry_run,
         auto: cli.auto,
         offline: cli.offline,
@@ -68,20 +80,28 @@ fn main() -> Result<(), AssistError> {
         prefer_paru: cli.prefer_paru,
         no_sudo: cli.no_sudo,
         verbose: cli.verbose,
+        },
+        installed_file: cli.installed_file.clone(),
+        installed: load_installed(&cli.installed_file),
     };
 
+    if cli.clear_installed {
+        fs::write(&cli.installed_file, "").map_err(|e| AssistError::CommandFailed(format!("clear installed ({e})")))?;
+        println!("Cleared installed list at {}", cli.installed_file.display());
+        return Ok(());
+    }
+
     match cli.command {
-        Commands::Ai { prompt } => handle_prompt(&prompt, &config)?,
+        Commands::Ai { prompt } => handle_prompt(&prompt, &mut state)?,
         Commands::Run { command } => {
             validate(&command)?;
-            run(&command, &config)?;
+            run(&command, &mut state)?;
         }
     }
 
     Ok(())
 }
 
-#[derive(Clone, Copy)]
 struct ExecConfig {
     dry_run: bool,
     auto: bool,
@@ -92,36 +112,42 @@ struct ExecConfig {
     verbose: bool,
 }
 
-fn handle_prompt(prompt: &str, config: &ExecConfig) -> Result<(), AssistError> {
-    if let Some(commands) = builtin_translate(prompt, config) {
+struct AppState {
+    config: ExecConfig,
+    installed_file: PathBuf,
+    installed: HashSet<String>,
+}
+
+fn handle_prompt(prompt: &str, state: &mut AppState) -> Result<(), AssistError> {
+    if let Some(commands) = builtin_translate(prompt, state) {
         for sugg in &commands {
             println!("{}    # {}", sugg.cmd, sugg.reason);
         }
 
-        if !config.auto {
+        if !state.config.auto {
             // Suggest but do not run unless explicitly requested
             return Ok(());
         }
 
-        if !confirm(&commands, config)? {
+        if !confirm(&commands, &state.config)? {
             return Ok(());
         }
 
         for sugg in commands {
-            ensure_offline_ok(&sugg, config)?;
+            ensure_offline_ok(&sugg, &state.config)?;
             validate(&sugg.cmd)?;
-            run(&sugg.cmd, config)?;
+            run(&sugg.cmd, state)?;
         }
         return Ok(());
     }
 
     // Fall back to OpenAI suggestion
-    let llm_cmds = llm_translate(prompt, config)?;
+    let llm_cmds = llm_translate(prompt, state)?;
     for cmd in &llm_cmds {
         println!("{cmd}    # from openai");
     }
 
-    if !config.auto {
+    if !state.config.auto {
         return Ok(());
     }
 
@@ -133,7 +159,7 @@ fn handle_prompt(prompt: &str, config: &ExecConfig) -> Result<(), AssistError> {
                 reason: "LLM suggestion",
             })
             .collect::<Vec<_>>(),
-        config,
+        &state.config,
     )? {
         return Ok(());
     }
@@ -143,9 +169,9 @@ fn handle_prompt(prompt: &str, config: &ExecConfig) -> Result<(), AssistError> {
             cmd: cmd.clone(),
             reason: "LLM suggestion",
         };
-        ensure_offline_ok(&sugg, config)?;
+        ensure_offline_ok(&sugg, &state.config)?;
         validate(&sugg.cmd)?;
-        run(&sugg.cmd, config)?;
+        run(&sugg.cmd, state)?;
     }
 
     Ok(())
@@ -167,7 +193,7 @@ struct Suggestion {
     reason: &'static str,
 }
 
-fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion>> {
+fn builtin_translate(prompt: &str, state: &AppState) -> Option<Vec<Suggestion>> {
     let lower = prompt.to_lowercase();
     let mut tokens = lower.split_whitespace();
     let first = tokens.next().unwrap_or("");
@@ -181,13 +207,20 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
     }
 
     if first == "install" && !rest.is_empty() {
+        if state.installed.contains(&rest) {
+            return Some(vec![Suggestion {
+                cmd: "echo already installed".to_string(),
+                reason: "skip reinstall",
+            }]);
+        }
+
         // Defer to LLM unless offline; offline falls back to literal pkg name.
-        if config.offline {
-            let installer = installer_for(&rest, config);
+        if state.config.offline {
+            let installer = installer_for(&rest, &state.config);
             return Some(vec![install_cmd(
                 &installer,
                 &rest,
-                config,
+                &state.config,
                 "install package",
             )]);
         }
@@ -196,21 +229,28 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
     }
 
     if ["remove", "uninstall", "delete"].contains(&first) && !rest.is_empty() {
-        let installer = installer_for(&rest, config);
+        let installer = installer_for(&rest, &state.config);
         let base = if installer.contains("pacman") {
             format!("{installer} -Rsn {rest}")
         } else {
             format!("{installer} -R {rest}")
         };
         return Some(vec![Suggestion {
-            cmd: apply_pkg_flags(base, config),
+            cmd: apply_pkg_flags(base, &state.config),
             reason: "remove package",
         }]);
     }
 
     if ["open", "launch", "start"].contains(&first) && !rest.is_empty() {
-        if config.offline {
-            if let Some(install) = build_install_command(&rest, "-S --needed", config) {
+        if state.installed.contains(&rest) {
+            return Some(vec![Suggestion {
+                cmd: format!("launch {rest}"),
+                reason: "already installed",
+            }]);
+        }
+
+        if state.config.offline {
+            if let Some(install) = build_install_command(&rest, "-S --needed", &state.config) {
                 return Some(vec![
                     Suggestion {
                         cmd: install,
@@ -223,9 +263,9 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
                 ]);
             }
             // fallback to previous behavior if resolution failed
-            let installer = installer_for(&rest, config);
+            let installer = installer_for(&rest, &state.config);
             return Some(vec![
-                install_cmd(&installer, &rest, config, "ensure app is installed"),
+                install_cmd(&installer, &rest, &state.config, "ensure app is installed"),
                 Suggestion {
                     cmd: format!("{rest}"),
                     reason: "launch app",
@@ -281,19 +321,19 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
     }
 
     if lower.contains("upgrade system") || lower.contains("update system") || first == "upgrade" {
-        let installer = installer_for("base", config);
+        let installer = installer_for("base", &state.config);
         let base = format!("{installer} -Syu");
         return Some(vec![Suggestion {
-            cmd: apply_pkg_flags(base, config),
+            cmd: apply_pkg_flags(base, &state.config),
             reason: "upgrade system packages",
         }]);
     }
 
     if lower.contains("clean cache") || lower.contains("cleanup") || lower.contains("clear cache") {
-        let installer = installer_for("base", config);
+        let installer = installer_for("base", &state.config);
         let base = format!("{installer} -Sc");
         return Some(vec![Suggestion {
-            cmd: apply_pkg_flags(base, config),
+            cmd: apply_pkg_flags(base, &state.config),
             reason: "clean package cache",
         }]);
     }
@@ -334,10 +374,10 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
     None
 }
 
-fn run(cmd: &str, config: &ExecConfig) -> Result<(), AssistError> {
+fn run(cmd: &str, state: &mut AppState) -> Result<(), AssistError> {
     println!("{cmd}");
 
-    if config.dry_run {
+    if state.config.dry_run {
         return Ok(());
     }
 
@@ -360,13 +400,15 @@ fn run(cmd: &str, config: &ExecConfig) -> Result<(), AssistError> {
         .wait()
         .map_err(|e| AssistError::CommandFailed(format!("{cmd} ({e})")))?;
 
-    if config.verbose {
+    if state.config.verbose {
         eprintln!("-> {cmd} exited with {}", status);
     }
 
     if !status.success() {
         return Err(AssistError::CommandFailed(format!("{cmd} exited with {status}")));
     }
+
+    update_installed_state(cmd, &status, state);
 
     Ok(())
 }
@@ -457,8 +499,64 @@ fn ensure_offline_ok(suggestion: &Suggestion, config: &ExecConfig) -> Result<(),
     Ok(())
 }
 
-fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, AssistError> {
-    if config.offline {
+fn load_installed(path: &Path) -> HashSet<String> {
+    if let Ok(data) = fs::read_to_string(path) {
+        return data
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+    }
+    HashSet::new()
+}
+
+fn save_installed(state: &AppState) -> Result<(), AssistError> {
+    let mut pkgs: Vec<_> = state.installed.iter().cloned().collect();
+    pkgs.sort();
+    fs::write(&state.installed_file, pkgs.join("\n"))
+        .map_err(|e| AssistError::CommandFailed(format!("save installed ({e})")))
+}
+
+fn update_installed_state(cmd: &str, status: &std::process::ExitStatus, state: &mut AppState) {
+    if !status.success() {
+        return;
+    }
+    let trimmed = cmd.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.is_empty() {
+        return;
+    }
+
+    let mut idx = 0;
+    let first = parts[0];
+    let mut installer = first;
+    if first == "sudo" && parts.len() > 1 {
+        installer = parts[1];
+        idx = 1;
+    }
+
+    if installer == "pacman" || installer == "paru" {
+        if parts.len() > idx + 1 {
+            let op = parts[idx + 1];
+            if op.starts_with("-S") {
+                if let Some(pkg) = parts.last() {
+                    state.installed.insert(pkg.to_string());
+                    let _ = save_installed(state);
+                }
+            }
+            if op.starts_with("-R") {
+                if let Some(pkg) = parts.last() {
+                    state.installed.remove(*pkg);
+                    let _ = save_installed(state);
+                }
+            }
+        }
+    }
+}
+
+fn llm_translate(prompt: &str, state: &AppState) -> Result<Vec<String>, AssistError> {
+    if state.config.offline {
         return Err(AssistError::CommandFailed(
             "offline mode: LLM suggestions disabled".into(),
         ));
@@ -468,7 +566,24 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
         .map_err(|_| AssistError::CommandFailed("OPENAI_API_KEY not set".into()))?;
 
     let client = HttpClient::new();
-    let system_prompt = "You are an Arch Linux expert. Respond with ONLY shell commands, one per line. Use pacman for repo packages; use paru for AUR packages (e.g., *-bin). Do not suggest generic shells (bash/sh) as commands. Never use dangerous operators (rm, dd, mkfs, pipes, redirects). Keep responses concise and focused on the requested task.";
+    let installed_list = if state.installed.is_empty() {
+        "none".to_string()
+    } else {
+        state
+            .installed
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    let system_prompt = format!(
+        "You are an Arch Linux expert. Installed packages (names only): {installed}. \
+Respond with ONLY shell commands, one per line. Use pacman for repo packages; use paru for AUR packages (e.g., *-bin). \
+Do not suggest generic shells (bash/sh) as commands. Never use dangerous operators (rm, dd, mkfs, pipes, redirects). \
+Keep responses concise and focused on the requested task.",
+        installed = installed_list
+    );
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
 
     let req_body = ChatRequest {
@@ -517,7 +632,7 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
         .and_then(|c| c.message.content.clone())
         .ok_or_else(|| AssistError::CommandFailed("LLM returned no content".into()))?;
 
-    if config.verbose {
+    if state.config.verbose {
         eprintln!("LLM raw content: {}", content_raw);
     }
 
@@ -564,7 +679,7 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
 
     let remapped: Vec<String> = adjusted
         .into_iter()
-        .map(|cmd| rewrite_install_with_resolution(cmd, config))
+        .map(|cmd| rewrite_install_with_resolution(cmd, &state.config))
         .collect();
 
     // If this was a launch intent and we only have installs, add a launch step
