@@ -26,6 +26,8 @@ Think of it as “AI autocomplete for your terminal”, not a replacement for pa
 
 1. The python Arch simulator is done :)
 
+   python main.py
+
 archsim $ paru -S brave-bin <br>
 :: Resolving AUR dependencies...<br>
 :: Installing brave-bin<br>
