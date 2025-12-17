@@ -22,4 +22,10 @@ class Simulator:
         if cmd.startswith("ip"):
             return handle_ip(cmd, self.state)
 
+        if cmd.startswith("launch "):
+            pkg = cmd.split(" ", 1)[1].strip()
+            if pkg in self.state.installed_packages:
+                return f"launching {pkg}"
+            return f"{pkg}: not installed"
+
         return f"{cmd}: command not found"

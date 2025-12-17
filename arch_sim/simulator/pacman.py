@@ -10,6 +10,9 @@ def handle_pacman(cmd, state):
     if parts[:2] == ["pacman", "-S"]:
         pkg = parts[-1]
         state.installed_packages.add(pkg)
+        if pkg == "pipewire":
+            state.errors["pipewire_missing"] = False
+            state.services["pipewire"] = "running"
         return f"resolving dependencies...\ninstalling {pkg}"
 
     if parts[:2] == ["pacman", "-R"]:
