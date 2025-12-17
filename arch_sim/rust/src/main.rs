@@ -54,8 +54,6 @@ enum Commands {
 enum AssistError {
     #[error("unsafe command blocked: {0}")]
     Unsafe(String),
-    #[error("no suggestion for prompt")]
-    NoSuggestion,
     #[error("command failed: {0}")]
     CommandFailed(String),
 }
@@ -183,39 +181,7 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
     }
 
     if first == "install" && !rest.is_empty() {
-        let alias_map: &[(&str, &str, bool)] = &[
-            ("google", "google-chrome", true),
-            ("chrome", "google-chrome", true),
-            ("google chrome", "google-chrome", true),
-            ("edge", "microsoft-edge-stable-bin", true),
-            ("microsoft edge", "microsoft-edge-stable-bin", true),
-            ("vscode", "visual-studio-code-bin", true),
-            ("code", "visual-studio-code-bin", true),
-            ("spotify", "spotify", true),
-            ("discord", "discord", true),
-            ("zoom", "zoom", true),
-            ("slack", "slack-desktop", true),
-        ];
-
-        if let Some((mapped_pkg, force_paru)) = alias_map
-            .iter()
-            .find(|(needle, _, _)| rest == *needle)
-            .map(|(_, target, use_paru)| (target.to_string(), *use_paru))
-        {
-            let installer = if force_paru {
-                "paru"
-            } else {
-                installer_for(&mapped_pkg, config)
-            };
-            return Some(vec![install_cmd(
-                &installer,
-                &mapped_pkg,
-                config,
-                "install package",
-            )]);
-        }
-
-        // If no alias match, defer to LLM unless offline; offline falls back to literal pkg name.
+        // Defer to LLM unless offline; offline falls back to literal pkg name.
         if config.offline {
             let installer = installer_for(&rest, config);
             return Some(vec![install_cmd(
@@ -410,8 +376,10 @@ fn validate(cmd: &str) -> Result<(), AssistError> {
         "bluetoothctl",
         "journalctl",
         "timedatectl",
+        "echo",
+        "launch",
     ];
-    let allowed_program = allowed.contains(&first) || (!first.is_empty() && !first.contains('/') && !first.starts_with('-'));
+    let allowed_program = allowed.contains(&first);
     if !allowed_program {
         return Err(AssistError::Unsafe(cmd.into()));
     }
@@ -482,10 +450,11 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
         .map_err(|_| AssistError::CommandFailed("OPENAI_API_KEY not set".into()))?;
 
     let client = HttpClient::new();
-    let system_prompt = "You are an Arch Linux expert. Respond with ONLY shell commands, one per line. Prefer pacman, then paru. Never use dangerous operators (rm, dd, mkfs, pipes, redirects).";
+    let system_prompt = "You are an Arch Linux expert. Respond with ONLY shell commands, one per line. Use pacman for repo packages; use paru for AUR packages (e.g., *-bin). Do not suggest generic shells (bash/sh) as commands. Never use dangerous operators (rm, dd, mkfs, pipes, redirects). Keep responses concise and focused on the requested task.";
+    let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
 
     let req_body = ChatRequest {
-        model: "gpt-5-mini".to_string(),
+        model,
         max_completion_tokens: Some(150),
         temperature: Some(1.0),
         messages: vec![
@@ -518,24 +487,245 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
         .json()
         .map_err(|e| AssistError::CommandFailed(format!("llm decode ({e})")))?;
 
-    let content = resp
+    if resp.choices.is_empty() {
+        return Err(AssistError::CommandFailed(
+            "LLM returned no choices".into(),
+        ));
+    }
+
+    let content_raw = resp
         .choices
         .first()
         .and_then(|c| c.message.content.clone())
-        .ok_or_else(|| AssistError::NoSuggestion)?;
+        .ok_or_else(|| AssistError::CommandFailed("LLM returned no content".into()))?;
 
-    let cmds: Vec<String> = content
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect();
-
-    if cmds.is_empty() {
-        return Err(AssistError::NoSuggestion);
+    if config.verbose {
+        eprintln!("LLM raw content: {}", content_raw);
     }
 
-    Ok(cmds)
+    let content = content_raw.trim();
+    if content.is_empty() {
+        return Err(AssistError::CommandFailed(
+            "LLM returned only whitespace".into(),
+        ));
+    }
+
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut cmds: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let clean = line.trim_matches('`').trim();
+        if clean.is_empty() {
+            continue;
+        }
+        if seen.insert(clean.to_string()) {
+            cmds.push(clean.to_string());
+        }
+    }
+
+    if cmds.is_empty() {
+        return Err(AssistError::CommandFailed(
+            "LLM returned an empty command list".into(),
+        ));
+    }
+
+    let mut safe_cmds = Vec::new();
+    for cmd in cmds {
+        if validate(&cmd).is_ok() {
+            safe_cmds.push(cmd);
+        }
+    }
+
+    if safe_cmds.is_empty() {
+        return Err(AssistError::CommandFailed(
+            "LLM produced no safe commands (blocked or unsupported)".into(),
+        ));
+    }
+
+    let adjusted = adjust_commands_for_intent(safe_cmds, prompt);
+
+    let remapped: Vec<String> = adjusted
+        .into_iter()
+        .map(|cmd| rewrite_install_with_resolution(cmd, config))
+        .collect();
+
+    Ok(remapped)
+}
+
+fn adjust_commands_for_intent(cmds: Vec<String>, prompt: &str) -> Vec<String> {
+    let prompt_lower = prompt.to_lowercase();
+    let desired_pkg = if prompt_lower.contains("word") || prompt_lower.contains("office") {
+        Some("libreoffice-fresh")
+    } else {
+        None
+    };
+
+    let mut out = Vec::new();
+    for cmd in &cmds {
+        // Drop suggestions that install helper tools we don't want
+        if cmd.contains(" yay") || cmd.starts_with("yay ") || cmd == "yay" {
+            continue;
+        }
+
+        if let Some(pkg) = desired_pkg {
+            if let Some(rewritten) = rewrite_install_pkg(cmd, pkg) {
+                out.push(rewritten);
+                continue;
+            }
+        }
+
+        out.push(cmd.clone());
+    }
+
+    if out.is_empty() {
+        return cmds;
+    }
+
+    out
+}
+
+fn rewrite_install_pkg(cmd: &str, new_pkg: &str) -> Option<String> {
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let (tool, rest) = (parts[0], &parts[1..]);
+    if tool != "pacman" && tool != "paru" && !(tool == "sudo" && rest.first() == Some(&"pacman")) {
+        return None;
+    }
+
+    let mut installer = tool;
+    let mut args = rest;
+    if tool == "sudo" && rest.first() == Some(&"pacman") {
+        installer = "sudo pacman";
+        args = &rest[1..];
+    }
+
+    if args.is_empty() || !args[0].starts_with("-S") {
+        return None;
+    }
+
+    let mut new_args = args.to_vec();
+    if let Some(last) = new_args.last_mut() {
+        *last = new_pkg;
+    }
+    let rebuilt = format!("{} {}", installer, new_args.join(" "));
+    Some(rebuilt)
+}
+
+fn rewrite_install_with_resolution(cmd: String, config: &ExecConfig) -> String {
+    let trimmed = cmd.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.len() >= 3 && parts[0] == "sudo" && parts[1] == "pacman" && parts[2].starts_with("-S") {
+        if let Some(pkg) = parts.last() {
+            if let Some(cmd) = resolve_installer(parts[2..].to_vec(), pkg, config) {
+                return cmd;
+            }
+        }
+    }
+    if parts.len() >= 2 && parts[0] == "pacman" && parts[1].starts_with("-S") {
+        if let Some(pkg) = parts.last() {
+            if let Some(cmd) = resolve_installer(parts[1..].to_vec(), pkg, config) {
+                return cmd;
+            }
+        }
+    }
+    cmd
+}
+
+fn resolve_installer(flags_and_pkg: Vec<&str>, pkg: &str, config: &ExecConfig) -> Option<String> {
+    let mut rest = flags_and_pkg;
+    rest.pop(); // drop pkg
+    let flags = rest.join(" ");
+
+    let resolution = resolve_package(pkg, config);
+    match resolution {
+        PackageOrigin::Repo => {
+            let installer = if config.no_sudo { "pacman" } else { "sudo pacman" };
+            Some(format!("{installer} {} {}", flags, pkg))
+        }
+        PackageOrigin::Aur => Some(format!("paru {} {}", flags, pkg)),
+        PackageOrigin::Unknown => {
+            if is_probably_aur(pkg) {
+                Some(format!("paru {} {}", flags, pkg))
+            } else {
+                None
+            }
+        }
+        PackageOrigin::Offline => None,
+    }
+}
+
+fn is_probably_aur(pkg: &str) -> bool {
+    let aur_suffixes = ["-bin", "-git", "-svn", "-hg"];
+    if aur_suffixes.iter().any(|s| pkg.ends_with(s)) {
+        return true;
+    }
+
+    let common_aur = [
+        "google-chrome",
+        "brave-bin",
+        "microsoft-edge-stable-bin",
+        "visual-studio-code-bin",
+        "wps-office",
+        "slack-desktop",
+        "zoom",
+        "spotify",
+    ];
+
+    common_aur.contains(&pkg)
+}
+
+enum PackageOrigin {
+    Repo,
+    Aur,
+    Unknown,
+    Offline,
+}
+
+fn resolve_package(pkg: &str, config: &ExecConfig) -> PackageOrigin {
+    if config.offline {
+        return PackageOrigin::Offline;
+    }
+
+    if check_arch_repo(pkg) {
+        return PackageOrigin::Repo;
+    }
+
+    if check_aur(pkg) {
+        return PackageOrigin::Aur;
+    }
+
+    PackageOrigin::Unknown
+}
+
+fn check_arch_repo(pkg: &str) -> bool {
+    let client = HttpClient::new();
+    let url = format!(
+        "https://archlinux.org/packages/search/json/?q={}",
+        urlencoding::encode(pkg)
+    );
+    if let Ok(resp) = client.get(url).send() {
+        if let Ok(json) = resp.json::<ArchSearch>() {
+            return !json.results.is_empty();
+        }
+    }
+    false
+}
+
+fn check_aur(pkg: &str) -> bool {
+    let client = HttpClient::new();
+    let url = format!(
+        "https://aur.archlinux.org/rpc/?v=5&type=info&arg={}",
+        urlencoding::encode(pkg)
+    );
+    if let Ok(resp) = client.get(url).send() {
+        if let Ok(json) = resp.json::<AurInfo>() {
+            return json.resultcount.unwrap_or(0) > 0;
+        }
+    }
+    false
 }
 
 #[derive(Serialize)]
@@ -574,4 +764,19 @@ struct Choice {
 #[derive(Deserialize)]
 struct LlmMessage {
     content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ArchSearch {
+    results: Vec<ArchResult>,
+}
+
+#[derive(Deserialize)]
+struct ArchResult {
+    pkgname: String,
+}
+
+#[derive(Deserialize)]
+struct AurInfo {
+    resultcount: Option<u32>,
 }

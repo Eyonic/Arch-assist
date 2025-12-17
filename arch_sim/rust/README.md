@@ -31,4 +31,5 @@ When `--auto` is used, you'll be asked to confirm unless `--yes` is provided.
 
 ## OpenAI
 - Set `OPENAI_API_KEY=sk-...` in your environment to enable LLM fallbacks.
+- Optional: override model with `OPENAI_MODEL` (default: `gpt-4o-mini`).
 - Use `--offline` to force built-ins only and avoid network during testing.
