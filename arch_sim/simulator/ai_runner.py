@@ -20,7 +20,7 @@ def _builtin_translate(user_input: str, state):
         installer = "paru" if pkg.endswith("-bin") else "pacman"
         return f"{installer} -S {pkg}"
 
-    if lower.startswith("remove "):
+    if lower.startswith(("remove ", "uninstall ", "delete ")):
         pkg = text.split(None, 1)[1].strip()
         if not pkg:
             return None
@@ -68,6 +68,30 @@ class AIRunner:
         self.state = state
 
     def run(self, user_input):
+        lowered = user_input.strip().lower()
+
+        # handle open/launch/start intents with auto-install then launch
+        if lowered.startswith(("open ", "launch ", "start ")):
+            pkg = user_input.split(None, 1)[1].strip() if " " in user_input else ""
+            if not pkg:
+                return "true", ""
+
+            install_output = ""
+            if pkg not in self.state.installed_packages:
+                installer = "paru" if pkg.endswith("-bin") else "pacman"
+                install_cmd = f"{installer} -S {pkg}"
+                validate(install_cmd)
+                install_output = self.sim.run(install_cmd)
+
+            launch_cmd = f"launch {pkg}"
+            validate(launch_cmd)
+            launch_output = self.sim.run(launch_cmd)
+
+            combined_output = "\n".join(
+                part for part in (install_output, launch_output) if part
+            )
+            return launch_cmd, combined_output
+
         cmd = _builtin_translate(user_input, self.state)
         if cmd is None:
             cmd = llm_translate(user_input, self.state)

@@ -1,7 +1,8 @@
 class SystemState:
     def __init__(self):
         self.installed_packages = {
-            "bash", "linux", "pacman", "systemd", "paru", "networkmanager"
+            "bash", "linux", "pacman", "systemd", "paru", "networkmanager",
+            "pipewire",
         }
 
         self.services = {

@@ -55,12 +55,27 @@ def test_ai_open_installs_then_launches():
     sim = Simulator(state)
     ai = AIRunner(sim, state)
 
-    # Not installed -> installs
-    cmd, _ = ai.run("open brave")
-    assert cmd == "pacman -S brave"
+    # Not installed -> installs then launches
+    cmd, out = ai.run("open brave")
+    assert cmd == "launch brave"
+    assert "installing brave" in out
+    assert "launching brave" in out
     assert "brave" in state.installed_packages
 
     # Already installed -> launch
     cmd, out = ai.run("open brave")
     assert cmd == "launch brave"
     assert out == "launching brave"
+
+
+def test_ai_delete_alias_removes_package():
+    state = SystemState()
+    sim = Simulator(state)
+    ai = AIRunner(sim, state)
+
+    ai.run("install chrome")
+    assert "chrome" in state.installed_packages
+
+    cmd, _ = ai.run("delete chrome")
+    assert cmd == "pacman -R chrome"
+    assert "chrome" not in state.installed_packages
