@@ -423,7 +423,8 @@ fn llm_translate(prompt: &str, config: &ExecConfig) -> Result<Vec<String>, Assis
 
     let req_body = ChatRequest {
         model: "gpt-5-mini".to_string(),
-        max_tokens: 150,
+        max_completion_tokens: Some(150),
+        temperature: Some(1.0),
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
@@ -478,7 +479,10 @@ struct ChatMessage {
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Deserialize)]
