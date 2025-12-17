@@ -9,13 +9,13 @@ Minimal Arch helper that translates common intent (install/remove/open/fix) into
 
 ## Usage
 - Suggest commands only (default): `arch-assist ai "open brave"` (prints commands; does not run)
-- Apply suggestions: `arch-assist --apply ai "open brave"`
+- Auto-run suggestions: `arch-assist --auto ai "open brave"`
 - Prefer paru over pacman: `arch-assist --prefer-paru ai "install firefox"`
 - Avoid sudo for pacman: `arch-assist --no-sudo ai "install base"`
-- Verbose exit codes: `arch-assist --verbose --apply ai "fix internet"`
+- Verbose exit codes: `arch-assist --verbose --auto ai "fix internet"`
 - Install package suggestion: `arch-assist ai "install firefox"`
 - Remove package suggestion (alias: uninstall/delete): `arch-assist ai "uninstall firefox"`
-- Open app suggestion (auto-install+launch if applied): `arch-assist --apply ai "open vlc"`
+- Open app suggestion (auto-install+launch if auto): `arch-assist --auto ai "open vlc"`
 - Fix sound/internet suggestions: `arch-assist ai "fix sound"` / `arch-assist ai "fix internet"`
 
 Commands run directly on your system (pacman/paru/systemctl). Keep `--dry-run` on if you just want the suggested commands.
