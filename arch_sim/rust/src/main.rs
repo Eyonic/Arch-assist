@@ -183,8 +183,50 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
     }
 
     if first == "install" && !rest.is_empty() {
-        let installer = installer_for(&rest, config);
-        return Some(vec![install_cmd(&installer, &rest, config, "install package")]);
+        let alias_map: &[(&str, &str, bool)] = &[
+            ("google", "google-chrome", true),
+            ("chrome", "google-chrome", true),
+            ("google chrome", "google-chrome", true),
+            ("edge", "microsoft-edge-stable-bin", true),
+            ("microsoft edge", "microsoft-edge-stable-bin", true),
+            ("vscode", "visual-studio-code-bin", true),
+            ("code", "visual-studio-code-bin", true),
+            ("spotify", "spotify", true),
+            ("discord", "discord", true),
+            ("zoom", "zoom", true),
+            ("slack", "slack-desktop", true),
+        ];
+
+        if let Some((mapped_pkg, force_paru)) = alias_map
+            .iter()
+            .find(|(needle, _, _)| rest == *needle)
+            .map(|(_, target, use_paru)| (target.to_string(), *use_paru))
+        {
+            let installer = if force_paru {
+                "paru"
+            } else {
+                installer_for(&mapped_pkg, config)
+            };
+            return Some(vec![install_cmd(
+                &installer,
+                &mapped_pkg,
+                config,
+                "install package",
+            )]);
+        }
+
+        // If no alias match, defer to LLM unless offline; offline falls back to literal pkg name.
+        if config.offline {
+            let installer = installer_for(&rest, config);
+            return Some(vec![install_cmd(
+                &installer,
+                &rest,
+                config,
+                "install package",
+            )]);
+        }
+
+        return None;
     }
 
     if ["remove", "uninstall", "delete"].contains(&first) && !rest.is_empty() {
