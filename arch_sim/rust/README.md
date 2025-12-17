@@ -23,6 +23,12 @@ Minimal Arch helper that translates common intent (install/remove/open/fix) into
 - Clean cache: `arch-assist ai "clean cache"`
 - Logs for a service: `arch-assist ai "logs sshd"`
 - Bluetooth fix: `arch-assist ai "fix bluetooth"`
+- Time sync fix: `arch-assist ai "fix time"`
+- Quick AI smoke test: `arch-assist --offline ai "test ai"` (prints built-in or LLM fallback; use `--offline` to avoid network)
 
 Commands run directly on your system (pacman/paru/systemctl). Keep `--dry-run` on if you just want the suggested commands.
 When `--auto` is used, you'll be asked to confirm unless `--yes` is provided.
+
+## OpenAI
+- Set `OPENAI_API_KEY=sk-...` in your environment to enable LLM fallbacks.
+- Use `--offline` to force built-ins only and avoid network during testing.

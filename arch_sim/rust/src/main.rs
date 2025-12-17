@@ -175,6 +175,13 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
     let first = tokens.next().unwrap_or("");
     let rest = tokens.collect::<Vec<_>>().join(" ").trim().to_string();
 
+    if lower == "test ai" {
+        return Some(vec![Suggestion {
+            cmd: "echo ai-ok".to_string(),
+            reason: "built-in test command",
+        }]);
+    }
+
     if first == "install" && !rest.is_empty() {
         let installer = installer_for(&rest, config);
         return Some(vec![install_cmd(&installer, &rest, config, "install package")]);
@@ -230,6 +237,19 @@ fn builtin_translate(prompt: &str, config: &ExecConfig) -> Option<Vec<Suggestion
             Suggestion {
                 cmd: "nmcli -t -f DEVICE,STATE d".to_string(),
                 reason: "list device states",
+            },
+        ]);
+    }
+
+    if lower.contains("fix time") || lower.contains("time sync") || lower.contains("clock") {
+        return Some(vec![
+            Suggestion {
+                cmd: "sudo timedatectl set-ntp true".to_string(),
+                reason: "enable NTP sync",
+            },
+            Suggestion {
+                cmd: "timedatectl status".to_string(),
+                reason: "show time sync status",
             },
         ]);
     }
@@ -347,6 +367,7 @@ fn validate(cmd: &str) -> Result<(), AssistError> {
         "pactl",
         "bluetoothctl",
         "journalctl",
+        "timedatectl",
     ];
     let allowed_program = allowed.contains(&first) || (!first.is_empty() && !first.contains('/') && !first.starts_with('-'));
     if !allowed_program {
